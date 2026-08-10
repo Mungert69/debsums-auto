@@ -4,6 +4,9 @@ Documentation=https://github.com/Mungert69/debsums-auto
 
 [Service]
 Type=oneshot
+# Exit code 1 means integrity differences were found; it is an expected
+# completed check, while the JSON result communicates the alert condition.
+SuccessExitStatus=1
 User=root
 Group=root
 ExecStart=/usr/local/sbin/config-integrity check --json --result-file /run/config-integrity/result.json --result-group nmgroup
