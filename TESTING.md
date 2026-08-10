@@ -200,6 +200,23 @@ The consuming agent must only read this file; it may advise an administrator
 using the supplied guidance but must not be granted permission to invoke
 baseline-changing commands.
 
+### Optional Ready For Quantum Docker-agent handoff
+
+This is not required for normal operation. After installing the Docker version
+of the Ready For Quantum Network Monitoring processor agent from the official
+[download page](https://readyforquantum.com/Download), mount the host result
+directory into the container read-only at the same path:
+
+```text
+/run/config-integrity:/run/config-integrity:ro
+```
+
+Confirm from the agent container that it can read
+`/run/config-integrity/result.json` but cannot create, replace, or alter it.
+Do not mount `/var/lib/config-integrity` into the container. The agent should
+consume only the `config-integrity-result/v1` result file and use its
+`consumer_guidance` when explaining a finding to an administrator.
+
 ### Cleanup of disposable example files
 
 After testing, remove the two `/tmp/config-integrity-*.conf` entries from

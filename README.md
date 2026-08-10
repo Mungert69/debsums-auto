@@ -242,3 +242,40 @@ sudo -u nmuser cat /run/config-integrity/result.json
 
 For direct integrations, `check --json` emits the same sanitized schema and
 `check --json --result-file PATH --result-group GROUP` atomically publishes it.
+
+### Optional Ready For Quantum Network Monitoring integration
+
+This is an optional integration feature. `config-integrity` works fully as a
+standalone command-line and systemd-timer tool; installing Ready For Quantum
+Network Monitoring is not required.
+
+To make the published result available to Ready For Quantum Network Monitoring,
+install both components on the monitored host:
+
+1. Install and enable this project's root-owned `config-integrity.service` and
+   `config-integrity.timer` as described above.
+2. Install the Docker version of the Ready For Quantum Network Monitoring
+   processor agent using the official [agent download page](https://readyforquantum.com/Download).
+3. Configure the agent container with a **read-only** bind mount of the result
+   directory:
+
+   ```text
+   host path:      /run/config-integrity
+   container path: /run/config-integrity
+   mode:           read-only
+   ```
+
+4. Ensure the agent process in the container can traverse and read the mounted
+   directory. On this host the directory is `root:nmgroup 0750` and the result
+   is `root:nmgroup 0640`; the host's `nmuser` belongs to `nmgroup`. If the
+   Docker agent uses a non-root user, give its process the corresponding host
+   group ID as a supplementary group. Do not make the directory or file
+   world-readable.
+
+The integration is intentionally one-way: the agent reads
+`/run/config-integrity/result.json` and reports the sanitized status to the
+monitoring system. It has no mount of `/var/lib/config-integrity`, no ability to
+write the result, and no authority to run `init` or `update`. A future static
+`configintegrity` endpoint in the processor agent can consume the
+`config-integrity-result/v1` schema and present it as a normal monitored
+endpoint.
