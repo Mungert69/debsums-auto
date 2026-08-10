@@ -25,6 +25,7 @@ EXIT_DIFFERENCES = 1
 EXIT_ERROR = 2
 VALID_DEBSUMS_RETURN_CODES = {0, 2}
 FAILED_RE = re.compile(r"^(?P<path>/[^\x00\r\n]*?)\s+FAILED\s*$")
+OK_RE = re.compile(r"^(?P<path>/[^\x00\r\n]*?)\s+OK\s*$")
 
 
 class OperationalError(Exception):
@@ -61,6 +62,10 @@ def parse_debsums_output(stdout: str, stderr: str) -> set[Path]:
                 continue
             match = FAILED_RE.fullmatch(raw_line)
             if not match:
+                # debsums 3.0.2.3 reports successful conffile checks too. They
+                # are understood input, but only FAILED paths belong in scope.
+                if OK_RE.fullmatch(raw_line):
+                    continue
                 unexpected.append(raw_line)
                 continue
             value = match.group("path")

@@ -144,8 +144,9 @@ sudo ./config-integrity check --verbose
 Compare the FAILED paths with the entries whose source is `debsums`. Confirm a
 real line such as `/etc/nginx/nginx.conf FAILED` is discovered correctly. Also
 record whether the installed Debian 13 `debsums -e` returns 0 with no failures
-and 2 with failed files, and whether it emits any additional diagnostic lines;
-these are the parser assumptions most important to verify manually.
+and 2 with failed files, and whether it emits any additional diagnostic lines.
+Debian 13 `debsums` 3.0.2.3 is known to emit both `OK` and `FAILED` lines; both
+forms are understood, while only `FAILED` paths enter the baseline.
 
 ### unattended-upgrades scenario
 

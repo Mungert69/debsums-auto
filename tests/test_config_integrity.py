@@ -151,6 +151,14 @@ class ConfigIntegrityTests(unittest.TestCase):
         parsed = ci.parse_debsums_output(f"{path}     FAILED\n", "")
         self.assertEqual(parsed, {path})
 
+    def test_debsums_ok_entries_are_understood_and_ignored(self):
+        failed = self.root / "failed file"
+        good = self.root / "good file"
+        parsed = ci.parse_debsums_output(
+            f"{good}     OK\n{failed}     FAILED\n", ""
+        )
+        self.assertEqual(parsed, {failed})
+
     def test_malformed_debsums_output(self):
         with self.assertRaisesRegex(ci.OperationalError, "unexpected output"):
             ci.run_debsums(Harness([], malformed="debsums: warning nonsense"))

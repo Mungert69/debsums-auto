@@ -20,9 +20,22 @@ Install the prerequisite and copy the executable to a root-owned location:
 ```sh
 sudo apt install debsums
 sudo install -o root -g root -m 0755 config-integrity /usr/local/sbin/config-integrity
+config-integrity --help
 ```
 
 No Python package or pip dependency is required.
+
+To evaluate it directly from a checkout without installing the script:
+
+```sh
+chmod 0755 config-integrity
+sudo ./config-integrity init
+sudo ./config-integrity check
+```
+
+Do not run `init --force` or accept `update` until the displayed files are
+known-good local configuration. Those commands establish trust; they do not
+independently determine whether the current contents are safe.
 
 ## Commands
 
@@ -103,11 +116,12 @@ This makes `check` suitable for cron and systemd monitoring.
 ## Design and security
 
 `debsums -e` output from both stdout and stderr is accepted only when every
-non-empty line unambiguously ends in whitespace plus `FAILED` and begins with
-an absolute path. Unrecognized output stops the scan instead of being silently
+non-empty line unambiguously identifies an absolute path with an `OK` or
+`FAILED` result. `OK` entries are understood and ignored; only `FAILED` paths
+enter the monitor. Unrecognized output stops the scan instead of being silently
 discarded. Exit statuses `0` (no discrepancy) and `2` (discrepancies found)
-are accepted; other statuses are operational failures. This behavior should be
-verified against the Debian 13 `debsums` package version in use.
+are accepted; other statuses are operational failures. This was verified with
+Debian 13's `debsums` 3.0.2.3.
 
 Files are opened without following a final-component symlink where the platform
 supports `O_NOFOLLOW`. Symlinks and non-regular files are rejected. SHA-256 is
