@@ -227,7 +227,9 @@ The result uses the stable `config-integrity-result/v1` schema. It includes a
 timestamp, exit code, status, aggregate counts, and sanitized findings
 (`state`, `path`, source, and package where known). It intentionally excludes
 file contents and hashes. Its `consumer_guidance` array is intended for a later
-LLM or automation consumer. It explains the meaning of each exit code and
+LLM or automation consumer. The supplied `configintegrity` Connect forwards
+that full guidance, along with the summary and findings, into the monitored
+host's status message for LLM host-data queries. It explains the meaning of each exit code and
 finding state, the review required before trusting a change, the exact
 administrator `sudo config-integrity update` and recheck workflow, how a
 rejected update behaves, and the investigation path for operational errors.
