@@ -158,3 +158,42 @@ python3 -m py_compile config-integrity tests/test_config_integrity.py
 
 The tests use temporary directories and fake subprocess results. They do not
 need root, modify `/etc`, or require `debsums` to be installed.
+
+## Scheduled checks with systemd
+
+Example units are provided in `systemd/`. Install the current executable and
+units, then enable the timer:
+
+```sh
+sudo install -o root -g root -m 0755 config-integrity /usr/local/sbin/config-integrity
+sudo install -o root -g root -m 0644 \
+  systemd/config-integrity.service /etc/systemd/system/config-integrity.service
+sudo install -o root -g root -m 0644 \
+  systemd/config-integrity.timer /etc/systemd/system/config-integrity.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now config-integrity.timer
+```
+
+The timer runs daily, adds up to 15 minutes of randomized delay to avoid a
+fixed load spike, and catches up after downtime with `Persistent=true`. It runs
+only `check`; it never updates the trusted baseline.
+
+Run and inspect a check immediately:
+
+```sh
+sudo systemctl start config-integrity.service
+systemctl status config-integrity.service
+sudo journalctl -u config-integrity.service --since today
+systemctl list-timers config-integrity.timer
+```
+
+A clean check exits 0. Integrity differences exit 1 and operational errors exit
+2, so either kind of problem marks that oneshot invocation failed while the
+timer remains scheduled. The journal contains the state and summary needed to
+distinguish them. For active notification, connect systemd's `OnFailure=` to an
+email, webhook, or monitoring service appropriate for the host; the supplied
+unit deliberately does not assume or embed notification credentials.
+
+`PrivateTmp` is intentionally not enabled because an explicitly configured
+extra file may live under `/tmp`. If the host never monitors such paths, an
+administrator may add that hardening option in a local systemd override.

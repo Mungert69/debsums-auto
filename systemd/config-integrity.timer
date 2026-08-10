@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Debian configuration integrity check daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=15m
+Persistent=true
+Unit=config-integrity.service
+
+[Install]
+WantedBy=timers.target
+

@@ -1,0 +1,13 @@
+[Unit]
+Description=Check Debian configuration integrity
+Documentation=https://github.com/Mungert69/debsums-auto
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/config-integrity check
+User=root
+Group=root
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+

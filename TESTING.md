@@ -159,6 +159,26 @@ forms are understood, while only `FAILED` paths enter the baseline.
 
 The tool intentionally does not trust package upgrades automatically.
 
+### systemd timer test
+
+After installing the example units as described in `README.md`, verify their
+syntax and schedule, then start an immediate check:
+
+```bash
+systemd-analyze verify systemd/config-integrity.service systemd/config-integrity.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now config-integrity.timer
+sudo systemctl start config-integrity.service
+systemctl status config-integrity.service --no-pager
+sudo journalctl -u config-integrity.service -n 20 --no-pager
+systemctl list-timers config-integrity.timer --no-pager
+```
+
+Expect the service invocation to finish successfully when the baseline is
+clean. The oneshot service normally becomes `inactive (dead)` after success;
+the timer remains `active (waiting)`. A detected difference makes the service
+invocation fail with status 1 but does not disable future timer runs.
+
 ### Cleanup of disposable example files
 
 After testing, remove the two `/tmp/config-integrity-*.conf` entries from
