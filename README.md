@@ -256,8 +256,37 @@ install both components on the monitored host:
    `config-integrity.timer` as described above.
 2. Install the Docker version of the Ready For Quantum Network Monitoring
    processor agent using the official [agent download page](https://readyforquantum.com/Download).
-3. Configure the agent container with a **read-only** bind mount of the result
-   directory:
+3. Install Docker Desktop/Engine with Docker Compose, create the agent state
+   directory, and use this Compose configuration. The official image is
+   multi-architecture (`amd64` and `arm64`).
+
+   ```yaml
+   services:
+     networkmonitorprocessor:
+       image: mungert/networkmonitorprocessor:latest
+       container_name: processor
+       user: root
+       restart: always
+       volumes:
+         - ${HOME}/state:/app/state/
+         - /run/config-integrity:/run/config-integrity:ro
+   ```
+
+   Create the state directory and start the agent:
+
+   ```sh
+   mkdir -p "$HOME/state"
+   docker compose up -d
+   ```
+
+   The first volume is the documented persistent agent state. The second is
+   the added, **read-only** configuration-integrity handoff.
+4. Authorize the Docker agent. Use `docker logs processor -f`, open the
+   device-authorization URL printed by the agent, complete sign-in, and wait
+   for the successful authorization message. Then sign in to the
+   [Ready For Quantum dashboard](https://readyforquantum.com/dashboard) with
+   the same account and select the local agent as the monitoring location.
+5. The read-only integrity-result mount is:
 
    ```text
    host path:      /run/config-integrity
@@ -265,12 +294,13 @@ install both components on the monitored host:
    mode:           read-only
    ```
 
-4. Ensure the agent process in the container can traverse and read the mounted
-   directory. On this host the directory is `root:nmgroup 0750` and the result
-   is `root:nmgroup 0640`; the host's `nmuser` belongs to `nmgroup`. If the
-   Docker agent uses a non-root user, give its process the corresponding host
-   group ID as a supplementary group. Do not make the directory or file
-   world-readable.
+The documented Docker agent runs as `root` **inside the container**, so it can
+read this read-only mount. It still cannot modify the host result because the
+mount is `:ro`, and it receives no mount of the baseline directory. For a
+non-root container deployment, grant its process the corresponding host group
+ID as a supplementary group: on this host the directory is
+`root:nmgroup 0750` and the result is `root:nmgroup 0640`. Do not make either
+world-readable.
 
 The integration is intentionally one-way: the agent reads
 `/run/config-integrity/result.json` and reports the sanitized status to the
