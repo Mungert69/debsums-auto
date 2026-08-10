@@ -55,7 +55,8 @@ class ConfigIntegrityTests(unittest.TestCase):
 
     def args(self, **values):
         defaults = {"baseline": self.baseline, "extra_files": self.extras,
-                    "force": False, "verbose": False, "yes": False}
+                    "force": False, "verbose": False, "yes": False,
+                    "json": False, "result_file": None, "result_group": None}
         defaults.update(values)
         return types.SimpleNamespace(**defaults)
 
@@ -99,6 +100,32 @@ class ConfigIntegrityTests(unittest.TestCase):
         self.write_baseline({str(path): self.entry(path)})
         rc, output = self.capture(ci.cmd_check, self.args(verbose=True), Harness([path]))
         self.assertEqual(rc, 0); self.assertIn("UNCHANGED", output)
+
+    def test_json_check_result_is_sanitized_and_has_consumer_guidance(self):
+        path = self.root / "one"; path.write_text("old")
+        self.write_baseline({str(path): self.entry(path)})
+        path.write_text("new")
+        rc, output = self.capture(ci.cmd_check, self.args(json=True), Harness([path]))
+        report = json.loads(output)
+        self.assertEqual(rc, 1)
+        self.assertEqual(report["schema"], "config-integrity-result/v1")
+        self.assertEqual(report["status"], "integrity_differences")
+        self.assertEqual(report["findings"][0]["state"], "CHANGED")
+        self.assertNotIn("sha256", report["findings"][0])
+        self.assertTrue(any("sudo config-integrity update" in item for item in report["consumer_guidance"]))
+        self.assertTrue(any("read-only" in item for item in report["consumer_guidance"]))
+
+    def test_json_result_file_is_atomically_written(self):
+        result_file = self.root / "result" / "last-result.json"
+        result_file.parent.mkdir()
+        self.write_baseline({})
+        rc, _ = self.capture(
+            ci.cmd_check, self.args(json=True, result_file=result_file), Harness([], rc=0)
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(result_file.read_text())["exit_code"], 0)
+        self.assertEqual(stat.S_IMODE(result_file.stat().st_mode), 0o640)
+        self.assertFalse(list(result_file.parent.glob(".last-result.json.*")))
 
     def test_tracked_file_content_changes_and_difference_exit(self):
         path = self.root / "one"; path.write_text("old")
@@ -282,6 +309,19 @@ class ConfigIntegrityTests(unittest.TestCase):
                 ci, "run_command", side_effect=ci.OperationalError("failure")):
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(ci.main(["check", "--baseline", str(self.baseline)]), 2)
+
+    def test_json_operational_error_writes_result_file(self):
+        result_file = self.root / "result" / "last-result.json"
+        result_file.parent.mkdir()
+        with mock.patch.object(ci, "require_root"):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(ci.main([
+                    "check", "--json", "--baseline", str(self.baseline),
+                    "--result-file", str(result_file),
+                ]), 2)
+        report = json.loads(result_file.read_text())
+        self.assertEqual(report["status"], "operational_error")
+        self.assertEqual(report["exit_code"], 2)
 
     def test_baseline_permissions(self):
         self.write_baseline({})

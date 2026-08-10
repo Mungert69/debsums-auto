@@ -167,6 +167,7 @@ syntax and schedule, then start an immediate check:
 ```bash
 systemd-analyze verify systemd/config-integrity.service systemd/config-integrity.timer
 sudo systemctl daemon-reload
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/config-integrity.conf
 sudo systemctl enable --now config-integrity.timer
 sudo systemctl start config-integrity.service
 systemctl status config-integrity.service --no-pager
@@ -178,6 +179,26 @@ Expect the service invocation to finish successfully when the baseline is
 clean. The oneshot service normally becomes `inactive (dead)` after success;
 the timer remains `active (waiting)`. A detected difference makes the service
 invocation fail with status 1 but does not disable future timer runs.
+
+### Read-only result handoff test
+
+The supplied service publishes a sanitized JSON status for the unprivileged
+Network Monitor processor agent. On the current host, verify its access as
+`nmuser`:
+
+```bash
+sudo systemctl start config-integrity.service
+sudo stat -c '%U:%G %a %n' /run/config-integrity /run/config-integrity/result.json
+sudo -u nmuser python3 -m json.tool /run/config-integrity/result.json
+```
+
+Expect `root:nmgroup` with modes `0750` and `0640`. Confirm that the JSON has
+schema `config-integrity-result/v1`, contains `consumer_guidance` with the
+administrator update and recheck workflow, contains no file contents or
+SHA-256 values, and has an exit code consistent with the service invocation.
+The consuming agent must only read this file; it may advise an administrator
+using the supplied guidance but must not be granted permission to invoke
+baseline-changing commands.
 
 ### Cleanup of disposable example files
 

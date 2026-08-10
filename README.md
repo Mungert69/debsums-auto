@@ -170,6 +170,9 @@ sudo install -o root -g root -m 0644 \
   systemd/config-integrity.service /etc/systemd/system/config-integrity.service
 sudo install -o root -g root -m 0644 \
   systemd/config-integrity.timer /etc/systemd/system/config-integrity.timer
+sudo install -o root -g root -m 0644 \
+  systemd/config-integrity.conf /etc/tmpfiles.d/config-integrity.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/config-integrity.conf
 sudo systemctl daemon-reload
 sudo systemctl enable --now config-integrity.timer
 ```
@@ -197,3 +200,45 @@ unit deliberately does not assume or embed notification credentials.
 `PrivateTmp` is intentionally not enabled because an explicitly configured
 extra file may live under `/tmp`. If the host never monitors such paths, an
 administrator may add that hardening option in a local systemd override.
+
+### Read-only result for a monitoring agent
+
+The supplied service publishes a sanitized JSON result after every run at:
+
+```text
+/run/config-integrity/result.json
+```
+
+The systemd unit deliberately grants read access only to the `nmgroup` group:
+
+```text
+directory: root:nmgroup 0750
+file:      root:nmgroup 0640
+```
+
+On this host `nmuser` is a member of `nmgroup`, so the processor agent can read
+the result but cannot run the root check, alter the result, change the timer,
+or modify the baseline. If the consumer uses a different group, update both
+`nmgroup` occurrences in `systemd/config-integrity.conf` and the
+`--result-group nmgroup` argument in `systemd/config-integrity.service` before
+installing the files.
+
+The result uses the stable `config-integrity-result/v1` schema. It includes a
+timestamp, exit code, status, aggregate counts, and sanitized findings
+(`state`, `path`, source, and package where known). It intentionally excludes
+file contents and hashes. Its `consumer_guidance` array is intended for a later
+LLM or automation consumer. It explains the meaning of each exit code and
+finding state, the review required before trusting a change, the exact
+administrator `sudo config-integrity update` and recheck workflow, how a
+rejected update behaves, and the investigation path for operational errors.
+The consumer may use that guidance to advise an administrator, but remains
+read-only and cannot itself make a baseline-changing call.
+
+Inspect the current result as the monitoring user:
+
+```sh
+sudo -u nmuser cat /run/config-integrity/result.json
+```
+
+For direct integrations, `check --json` emits the same sanitized schema and
+`check --json --result-file PATH --result-group GROUP` atomically publishes it.
