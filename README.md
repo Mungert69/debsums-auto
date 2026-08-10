@@ -236,6 +236,15 @@ rejected update behaves, and the investigation path for operational errors.
 The consumer may use that guidance to advise an administrator, but remains
 read-only and cannot itself make a baseline-changing call.
 
+The Connect keeps its host status within the platform's 4 KB status-message
+limit. It always includes the check timestamp, result status and exit code,
+summary, and LLM guidance. It then adds only complete finding entries that fit.
+When findings are omitted it states the exact shown/total count and directs an
+administrator to the safe read-only command `sudo config-integrity check
+--verbose` for the complete list. Integrity findings use the explicit alert
+wording `CONFIGINTEGRITY: Configuration integrity differences detected`, rather
+than the generic network-oriented “Failed to connect” wording.
+
 Inspect the current result as the monitoring user:
 
 ```sh
