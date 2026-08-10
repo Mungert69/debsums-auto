@@ -221,6 +221,12 @@ Do not mount `/var/lib/config-integrity` into the container. The agent should
 consume only the `config-integrity-result/v1` result file and use its
 `consumer_guidance` when explaining a finding to an administrator.
 
+If the endpoint says it cannot find `/run/config-integrity/result.json`, inspect
+the running container mounts. It must show
+`/run/config-integrity -> /run/config-integrity (ro)`. Recreate the same
+Compose project that owns the running container, retaining the exact locally
+built agent image tag when applicable.
+
 ### Cleanup of disposable example files
 
 After testing, remove the two `/tmp/config-integrity-*.conf` entries from

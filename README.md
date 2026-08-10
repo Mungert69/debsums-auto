@@ -263,6 +263,8 @@ install both components on the monitored host:
    ```yaml
    services:
      networkmonitorprocessor:
+       # Use the exact image/tag you built and tested. The official release
+       # example is mungert/networkmonitorprocessor:latest.
        image: mungert/networkmonitorprocessor:latest
        container_name: processor
        user: root
@@ -309,3 +311,33 @@ write the result, and no authority to run `init` or `update`. A future static
 `configintegrity` endpoint in the processor agent can consume the
 `config-integrity-result/v1` schema and present it as a normal monitored
 endpoint.
+
+#### Docker handoff troubleshooting
+
+If the `configintegrity` endpoint reports:
+
+```text
+CONFIGINTEGRITY: Failed to connect: Could not find a part of the path
+'/run/config-integrity/result.json'
+```
+
+the endpoint implementation is present, but the running processor container
+does not have the read-only result mount. Confirm the root service has produced
+the file, then inspect the container:
+
+```sh
+sudo systemctl start config-integrity.service
+sudo stat /run/config-integrity/result.json
+docker inspect processor --format '{{range .Mounts}}{{.Source}} -> {{.Destination}} ({{if .RW}}rw{{else}}ro{{end}}){{println}}{{end}}'
+```
+
+The inspection must show:
+
+```text
+/run/config-integrity -> /run/config-integrity (ro)
+```
+
+Add the volume shown above to the Compose service and recreate the **same
+Compose project/container that runs the agent**. If you built a local processor
+image containing the new endpoint, retain its exact image tag when recreating
+the container; do not replace it with a generic release image tag.
