@@ -1,0 +1,146 @@
+# config-integrity
+
+`config-integrity` is a small Python 3 tool for Debian 13 that records an
+explicitly trusted SHA-256 baseline of locally modified Debian configuration
+files. It uses `debsums -e` as its Debian-file input and can also monitor a
+short, explicit list of user-managed files.
+
+It detects change relative to a **local baseline**. It does not prove that a
+machine or the baseline was uncompromised when the baseline was created.
+
+## Requirements and installation
+
+- Debian 13
+- Python 3 (standard library only)
+- `debsums`
+- root privileges for operational commands
+
+Install the prerequisite and copy the executable to a root-owned location:
+
+```sh
+sudo apt install debsums
+sudo install -o root -g root -m 0755 config-integrity /usr/local/sbin/config-integrity
+```
+
+No Python package or pip dependency is required.
+
+## Commands
+
+Create the first baseline:
+
+```sh
+sudo config-integrity init
+```
+
+`init` refuses to replace an existing baseline unless `--force` is supplied.
+It prints every file being trusted. The default baseline is
+`/var/lib/config-integrity/baseline.json`; its directory is mode `0700` and
+the atomically written JSON file is mode `0600`.
+
+Check without changing trust state:
+
+```sh
+sudo config-integrity check
+sudo config-integrity check --verbose
+```
+
+Normal output shows anomalies only. `--verbose` includes `UNCHANGED` entries.
+The states are:
+
+- `UNCHANGED`: still reported by its source and equal to the trusted hash.
+- `CHANGED`: still reported and different from the trusted hash.
+- `NEW`: currently monitored but absent from the baseline.
+- `REMOVED`: a tracked file is absent from disk.
+- `RESTORED`: a baseline `debsums` file is no longer reported as failed.
+
+Review and explicitly replace the trust state:
+
+```sh
+sudo config-integrity update
+sudo config-integrity update --yes
+```
+
+`update` displays differences first and asks for confirmation. `--yes` is
+intended for a workflow in which the proposed state has already been reviewed.
+Checks and package upgrades never update the baseline automatically.
+
+All commands accept `--baseline PATH` and `--extra-files PATH`, which are
+particularly useful in tests or isolated environments. See command-specific
+`--help` output.
+
+## Additional files
+
+The optional `/etc/config-integrity/extra-files` contains one absolute path per
+line. Blank lines and lines whose first non-whitespace character is `#` are
+ignored. Directories are not scanned recursively.
+
+```text
+# Application configuration outside dpkg conffiles
+/opt/my-app/appsettings.json
+/srv/example/config with spaces.json
+```
+
+An existing extra file is recorded with source `extra`. A missing tracked extra
+file is `REMOVED`; an existing newly listed file is `NEW`.
+
+## Output and exit codes
+
+Example anomaly:
+
+```text
+CHANGED /etc/nginx/nginx.conf [nginx-common]
+  old: 0123...
+  new: abcd...
+Checked: 8 | Changed: 1 | New: 0 | Removed: 0 | Restored: 0
+```
+
+- `0`: successful initialization/update, or a clean check
+- `1`: integrity differences found; also used when an update is declined
+- `2`: operational or configuration error
+
+This makes `check` suitable for cron and systemd monitoring.
+
+## Design and security
+
+`debsums -e` output from both stdout and stderr is accepted only when every
+non-empty line unambiguously ends in whitespace plus `FAILED` and begins with
+an absolute path. Unrecognized output stops the scan instead of being silently
+discarded. Exit statuses `0` (no discrepancy) and `2` (discrepancies found)
+are accepted; other statuses are operational failures. This behavior should be
+verified against the Debian 13 `debsums` package version in use.
+
+Files are opened without following a final-component symlink where the platform
+supports `O_NOFOLLOW`. Symlinks and non-regular files are rejected. SHA-256 is
+calculated incrementally, and device, inode, size, modification time, and
+change time are compared before and after reading to catch common races. This
+does not make filesystem inspection perfectly race-free, particularly where a
+parent directory is attacker-controlled.
+
+Package ownership is best-effort via `dpkg-query -S -- PATH`; failure to find an
+owner does not prevent hashing. Baseline replacement uses a same-directory
+temporary file, `fsync`, `os.replace`, and directory `fsync`.
+
+## Limitations
+
+- The tool inherits the coverage and accuracy of `debsums -e` for Debian files.
+- It is not a general filesystem scanner, malware detector, remote attestation
+  mechanism, or replacement for protected off-host audit records.
+- A privileged attacker can alter the tool and its local baseline.
+- File metadata, ownership, mode, ACLs, xattrs, and directory contents are not
+  baselined; file contents are.
+- A Debian file that stops being reported is called `RESTORED`, but the result
+  should still be reviewed (for example after a package version change).
+- Missing extra-file entries that were never in the baseline are not check
+  anomalies; initialization/update refuses to trust such newly configured
+  missing files. An already tracked missing file is reviewable as `REMOVED`
+  during update and can then be explicitly removed from the baseline.
+
+## Automated tests
+
+```sh
+python3 -m unittest discover -s tests -v
+python3 -m py_compile config-integrity tests/test_config_integrity.py
+```
+
+The tests use temporary directories and fake subprocess results. They do not
+need root, modify `/etc`, or require `debsums` to be installed.

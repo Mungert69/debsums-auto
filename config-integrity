@@ -1,0 +1,447 @@
+#!/usr/bin/env python3
+"""Monitor locally trusted changes to Debian-managed configuration files."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+from typing import Any, Callable, Iterable
+
+
+VERSION = 1
+DEFAULT_BASELINE = Path("/var/lib/config-integrity/baseline.json")
+DEFAULT_EXTRA_FILES = Path("/etc/config-integrity/extra-files")
+EXIT_OK = 0
+EXIT_DIFFERENCES = 1
+EXIT_ERROR = 2
+VALID_DEBSUMS_RETURN_CODES = {0, 2}
+FAILED_RE = re.compile(r"^(?P<path>/[^\x00\r\n]*?)\s+FAILED\s*$")
+
+
+class OperationalError(Exception):
+    """An expected error suitable for presentation without a traceback."""
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def require_root() -> None:
+    if os.geteuid() != 0:
+        raise OperationalError("this command must be run as root")
+
+
+def run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            args, capture_output=True, text=True, errors="replace", shell=False,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise OperationalError(f"required command not found: {args[0]}") from exc
+    except OSError as exc:
+        raise OperationalError(f"could not run {args[0]}: {exc}") from exc
+
+
+def parse_debsums_output(stdout: str, stderr: str) -> set[Path]:
+    paths: set[Path] = set()
+    unexpected: list[str] = []
+    for stream in (stdout, stderr):
+        for raw_line in stream.splitlines():
+            if not raw_line.strip():
+                continue
+            match = FAILED_RE.fullmatch(raw_line)
+            if not match:
+                unexpected.append(raw_line)
+                continue
+            value = match.group("path")
+            path = Path(value)
+            if not path.is_absolute() or value in {"/", "//"}:
+                unexpected.append(raw_line)
+            else:
+                paths.add(path)
+    if unexpected:
+        sample = "\n  ".join(unexpected[:5])
+        suffix = "\n  ..." if len(unexpected) > 5 else ""
+        raise OperationalError(
+            "unexpected output from debsums; scan cannot be interpreted safely:\n  "
+            + sample + suffix
+        )
+    return paths
+
+
+def run_debsums(runner: Callable[[list[str]], subprocess.CompletedProcess[str]] = run_command) -> set[Path]:
+    result = runner(["debsums", "-e"])
+    if result.returncode not in VALID_DEBSUMS_RETURN_CODES:
+        detail = (result.stderr or result.stdout).strip()
+        if detail:
+            detail = ": " + detail.splitlines()[0]
+        raise OperationalError(f"debsums -e failed with exit status {result.returncode}{detail}")
+    return parse_debsums_output(result.stdout, result.stderr)
+
+
+def parse_extra_files(path: Path) -> set[Path]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return set()
+    except (OSError, UnicodeError) as exc:
+        raise OperationalError(f"cannot read extra-files list {path}: {exc}") from exc
+    result: set[Path] = set()
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "\x00" in line or not Path(line).is_absolute():
+            raise OperationalError(f"{path}:{number}: expected one absolute path")
+        result.add(Path(line))
+    return result
+
+
+def hash_regular_file(path: Path) -> str:
+    """Hash a stable regular file without following a final-component symlink."""
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        if path.is_symlink():
+            raise OperationalError(f"refusing to hash symlink: {path}") from exc
+        raise OperationalError(f"cannot open {path}: {exc}") from exc
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise OperationalError(f"not a regular file: {path}")
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        after = os.fstat(fd)
+        stable = (
+            before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) == (
+            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if not stable:
+            raise OperationalError(f"file changed while being hashed: {path}")
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
+def package_owner(path: Path, runner: Callable[[list[str]], subprocess.CompletedProcess[str]] = run_command) -> str | None:
+    result = runner(["dpkg-query", "-S", "--", str(path)])
+    if result.returncode != 0:
+        return None
+    line = result.stdout.splitlines()[0] if result.stdout.splitlines() else ""
+    if ": " not in line:
+        return None
+    owners = line.split(": ", 1)[0].strip()
+    return owners or None
+
+
+def discover(
+    extra_file: Path,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[str]] = run_command,
+) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    debsums_paths = run_debsums(runner)
+    extras = parse_extra_files(extra_file)
+    entries: dict[str, dict[str, Any]] = {}
+    missing: set[str] = set()
+    sources: dict[Path, str] = {p: "debsums" for p in debsums_paths}
+    for path in extras:
+        sources.setdefault(path, "extra")
+    for path in sorted(sources, key=str):
+        source = sources[path]
+        try:
+            digest = hash_regular_file(path)
+        except FileNotFoundError:
+            missing.add(str(path))
+            continue
+        entry: dict[str, Any] = {"sha256": digest, "source": source}
+        if source == "debsums":
+            owner = package_owner(path, runner)
+            if owner:
+                entry["package"] = owner
+        entries[str(path)] = entry
+    return entries, missing
+
+
+def make_baseline(files: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    return {"version": VERSION, "created_at": utc_now(), "files": files}
+
+
+def validate_entry(path: str, entry: Any) -> None:
+    if not Path(path).is_absolute() or not isinstance(entry, dict):
+        raise OperationalError("baseline contains an invalid file entry")
+    digest = entry.get("sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise OperationalError(f"baseline contains an invalid SHA-256 for {path}")
+    if entry.get("source") not in {"debsums", "extra"}:
+        raise OperationalError(f"baseline contains an invalid source for {path}")
+    if "package" in entry and not isinstance(entry["package"], str):
+        raise OperationalError(f"baseline contains an invalid package for {path}")
+
+
+def load_baseline(path: Path) -> dict[str, Any]:
+    try:
+        if path.is_symlink():
+            raise OperationalError(f"refusing symlink baseline: {path}")
+        if os.geteuid() == 0:
+            file_info = path.stat()
+            parent_info = path.parent.stat()
+            if file_info.st_uid != 0 or stat.S_IMODE(file_info.st_mode) & 0o077:
+                raise OperationalError(f"baseline is not secured as root-only: {path}")
+            if path.parent.is_symlink() or parent_info.st_uid != 0 or stat.S_IMODE(parent_info.st_mode) & 0o077:
+                raise OperationalError(f"baseline directory is not secured as root-only: {path.parent}")
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise OperationalError(f"baseline does not exist: {path}; run init first") from exc
+    except json.JSONDecodeError as exc:
+        raise OperationalError(f"baseline is not valid JSON: {path}: {exc}") from exc
+    except OSError as exc:
+        raise OperationalError(f"cannot read baseline {path}: {exc}") from exc
+    if not isinstance(data, dict) or data.get("version") != VERSION:
+        version = data.get("version") if isinstance(data, dict) else None
+        raise OperationalError(f"unsupported baseline version: {version!r}")
+    if not isinstance(data.get("created_at"), str) or not isinstance(data.get("files"), dict):
+        raise OperationalError("baseline structure is invalid")
+    for name, entry in data["files"].items():
+        if not isinstance(name, str):
+            raise OperationalError("baseline contains a non-string path")
+        validate_entry(name, entry)
+    return data
+
+
+def secure_directory(directory: Path) -> None:
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if directory.is_symlink() or not directory.is_dir():
+            raise OperationalError(f"baseline directory is not a real directory: {directory}")
+        os.chmod(directory, 0o700)
+        if os.geteuid() == 0:
+            os.chown(directory, 0, 0)
+    except OSError as exc:
+        raise OperationalError(f"cannot secure baseline directory {directory}: {exc}") from exc
+
+
+def write_baseline_atomic(path: Path, data: dict[str, Any]) -> None:
+    secure_directory(path.parent)
+    temporary: str | None = None
+    try:
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        os.chmod(path, 0o600)
+        if os.geteuid() == 0:
+            os.chown(path, 0, 0)
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError as exc:
+        raise OperationalError(f"cannot write baseline {path}: {exc}") from exc
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+
+def compare(
+    old: dict[str, dict[str, Any]], current: dict[str, dict[str, Any]], missing: set[str]
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for path in sorted(set(old) | set(current) | missing):
+        prior = old.get(path)
+        now = current.get(path)
+        if prior is None and now is not None:
+            state = "NEW"
+        elif prior is not None and path in missing:
+            state = "REMOVED"
+        elif prior is not None and now is None:
+            state = "RESTORED" if prior["source"] == "debsums" else "REMOVED"
+        elif prior is not None and now is not None and prior["sha256"] != now["sha256"]:
+            state = "CHANGED"
+        elif prior is not None and now is not None:
+            state = "UNCHANGED"
+        else:
+            continue  # A configured extra path missing both before and now.
+        results.append({"state": state, "path": path, "old": prior, "new": now})
+    return results
+
+
+def inspect_tracked_paths(files: dict[str, dict[str, Any]]) -> set[str]:
+    """Find absent tracked paths and reject paths replaced by symlinks."""
+    missing: set[str] = set()
+    for name in files:
+        path = Path(name)
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            missing.add(name)
+            continue
+        except OSError as exc:
+            raise OperationalError(f"cannot inspect tracked path {path}: {exc}") from exc
+        if stat.S_ISLNK(info.st_mode):
+            raise OperationalError(f"tracked path has become a symlink: {path}")
+    return missing
+
+
+def display_result(result: dict[str, Any], verbose_hashes: bool = True) -> None:
+    entry = result["new"] or result["old"] or {}
+    package = f" [{entry['package']}]" if entry.get("package") else ""
+    print(f"{result['state']} {result['path']}{package}")
+    if verbose_hashes:
+        if result["old"] and result["state"] in {"CHANGED", "REMOVED", "RESTORED"}:
+            print(f"  old: {result['old']['sha256']}")
+        if result["new"] and result["state"] in {"CHANGED", "NEW"}:
+            print(f"  new: {result['new']['sha256']}")
+
+
+def print_summary(results: Iterable[dict[str, Any]]) -> None:
+    rows = list(results)
+    counts = {name: 0 for name in ("CHANGED", "NEW", "REMOVED", "RESTORED")}
+    for row in rows:
+        if row["state"] in counts:
+            counts[row["state"]] += 1
+    checked = sum(1 for row in rows if row["old"] is not None)
+    print(
+        f"Checked: {checked} | Changed: {counts['CHANGED']} | New: {counts['NEW']} | "
+        f"Removed: {counts['REMOVED']} | Restored: {counts['RESTORED']}"
+    )
+
+
+def cmd_init(args: argparse.Namespace, runner=run_command) -> int:
+    path: Path = args.baseline
+    if path.exists() and not args.force:
+        raise OperationalError(f"baseline already exists: {path}; use --force to replace it")
+    files, missing = discover(args.extra_files, runner)
+    if missing:
+        names = "\n  ".join(sorted(missing))
+        raise OperationalError(f"cannot initialize: monitored files are missing:\n  {names}")
+    print("Accepting into trusted baseline:")
+    for name, entry in files.items():
+        package = f" [{entry['package']}]" if entry.get("package") else ""
+        print(f"  {name}{package} ({entry['source']})")
+    if not files:
+        print("  (no modified or extra files)")
+    write_baseline_atomic(path, make_baseline(files))
+    print(f"Stored {len(files)} file(s) in {path}")
+    return EXIT_OK
+
+
+def cmd_check(args: argparse.Namespace, runner=run_command) -> int:
+    baseline = load_baseline(args.baseline)
+    current, missing = discover(args.extra_files, runner)
+    missing.update(inspect_tracked_paths(baseline["files"]))
+    results = compare(baseline["files"], current, missing)
+    for result in results:
+        if result["state"] != "UNCHANGED" or args.verbose:
+            display_result(result, result["state"] != "UNCHANGED")
+    print_summary(results)
+    return EXIT_DIFFERENCES if any(r["state"] != "UNCHANGED" for r in results) else EXIT_OK
+
+
+def confirm_update(input_func: Callable[[str], str] = input) -> bool:
+    try:
+        answer = input_func("Replace the trusted baseline with this state? [y/N] ")
+    except EOFError:
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def cmd_update(args: argparse.Namespace, runner=run_command, input_func=input) -> int:
+    baseline = load_baseline(args.baseline)
+    current, missing = discover(args.extra_files, runner)
+    missing.update(inspect_tracked_paths(baseline["files"]))
+    untracked_missing = missing - set(baseline["files"])
+    if untracked_missing:
+        names = "\n  ".join(sorted(untracked_missing))
+        raise OperationalError(f"cannot update: newly monitored files are missing:\n  {names}")
+    results = compare(baseline["files"], current, missing)
+    changes = [row for row in results if row["state"] != "UNCHANGED"]
+    if changes:
+        print("Proposed baseline differences:")
+        for result in changes:
+            display_result(result)
+    else:
+        print("Proposed baseline has no file-content differences.")
+    if not args.yes and not confirm_update(input_func):
+        print("Baseline not changed.")
+        return EXIT_DIFFERENCES
+    write_baseline_atomic(args.baseline, make_baseline(current))
+    print(f"Baseline replaced with {len(current)} file(s).")
+    return EXIT_OK
+
+
+def build_parser() -> argparse.ArgumentParser:
+    warning = (
+        "This tool detects differences from a locally trusted baseline; it does not "
+        "prove that a host is uncompromised. Exit codes: 0 clean/success, 1 integrity "
+        "differences (or declined update), 2 operational error."
+    )
+    parser = argparse.ArgumentParser(prog="config-integrity", description=warning)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE,
+                        help=f"baseline JSON path (default: {DEFAULT_BASELINE})")
+    common.add_argument("--extra-files", type=Path, default=DEFAULT_EXTRA_FILES,
+                        help=f"list of additional absolute paths (default: {DEFAULT_EXTRA_FILES})")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    init_parser = subparsers.add_parser("init", parents=[common], help="create the trusted baseline",
+                                        description="Create an explicitly trusted baseline. " + warning)
+    init_parser.add_argument("--force", action="store_true", help="replace an existing baseline")
+    init_parser.set_defaults(func=cmd_init)
+    check_parser = subparsers.add_parser("check", parents=[common], help="compare with the baseline",
+                                         description="Check without changing the baseline. " + warning)
+    check_parser.add_argument("--verbose", action="store_true", help="also display UNCHANGED files")
+    check_parser.set_defaults(func=cmd_check)
+    update_parser = subparsers.add_parser("update", parents=[common], help="explicitly replace the baseline",
+                                          description="Review and explicitly replace the baseline. " + warning)
+    update_parser.add_argument("--yes", action="store_true", help="accept without interactive confirmation")
+    update_parser.set_defaults(func=cmd_update)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        require_root()
+        return args.func(args)
+    except OperationalError as exc:
+        print(f"config-integrity: error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except KeyboardInterrupt:
+        print("config-integrity: interrupted", file=sys.stderr)
+        return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    sys.exit(main())
