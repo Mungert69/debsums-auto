@@ -113,6 +113,7 @@ class ConfigIntegrityTests(unittest.TestCase):
         self.assertEqual(report["findings"][0]["state"], "CHANGED")
         self.assertNotIn("sha256", report["findings"][0])
         self.assertTrue(any("sudo config-integrity update" in item for item in report["consumer_guidance"]))
+        self.assertTrue(any("sudo systemctl start config-integrity.service" in item for item in report["consumer_guidance"]))
         self.assertTrue(any("read-only" in item for item in report["consumer_guidance"]))
 
     def test_json_result_file_is_atomically_written(self):

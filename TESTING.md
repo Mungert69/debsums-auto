@@ -134,6 +134,16 @@ echo $?
 
 The check should be clean with exit status 0.
 
+If the optional processor JSON handoff is installed, refresh it immediately so
+the monitored endpoint clears without waiting for the next timer run:
+
+```bash
+sudo systemctl start config-integrity.service
+sudo -u nmuser python3 -m json.tool /run/config-integrity/result.json
+```
+
+Expect `"exit_code": 0`, `"status": "clean"`, and an empty `findings` list.
+
 ### debsums-specific comparison
 
 ```bash

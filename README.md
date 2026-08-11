@@ -231,8 +231,10 @@ LLM or automation consumer. The supplied `configintegrity` Connect forwards
 that full guidance, along with the summary and findings, into the monitored
 host's status message for LLM host-data queries. It explains the meaning of each exit code and
 finding state, the review required before trusting a change, the exact
-administrator `sudo config-integrity update` and recheck workflow, how a
-rejected update behaves, and the investigation path for operational errors.
+administrator `sudo config-integrity update` and recheck workflow, the
+immediate `sudo systemctl start config-integrity.service` refresh required for
+the optional processor JSON handoff, how a rejected update behaves, and the
+investigation path for operational errors.
 The consumer may use that guidance to advise an administrator, but remains
 read-only and cannot itself make a baseline-changing call.
 
