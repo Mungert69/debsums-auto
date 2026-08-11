@@ -77,6 +77,19 @@ sudo config-integrity update --yes
 intended for a workflow in which the proposed state has already been reviewed.
 Checks and package upgrades never update the baseline automatically.
 
+If the optional Network Monitor JSON handoff is installed, accepting an update
+changes only the baseline; it does not by itself rewrite the published result.
+Refresh the result and then wait for the processor's next poll:
+
+```sh
+sudo systemctl start config-integrity.service
+```
+
+Confirm that the monitored `configintegrity` endpoint reports clean/up before
+resetting its existing Network Monitor alert. The alert is intentionally not
+acknowledged automatically, so its incident history remains available until a
+user resets it in the dashboard or through the assistant.
+
 All commands accept `--baseline PATH` and `--extra-files PATH`, which are
 particularly useful in tests or isolated environments. See command-specific
 `--help` output.
@@ -190,12 +203,12 @@ sudo journalctl -u config-integrity.service --since today
 systemctl list-timers config-integrity.timer
 ```
 
-A clean check exits 0. Integrity differences exit 1 and operational errors exit
-2, so either kind of problem marks that oneshot invocation failed while the
-timer remains scheduled. The journal contains the state and summary needed to
-distinguish them. For active notification, connect systemd's `OnFailure=` to an
-email, webhook, or monitoring service appropriate for the host; the supplied
-unit deliberately does not assume or embed notification credentials.
+A clean check exits 0, integrity differences exit 1, and operational errors
+exit 2. The supplied unit treats exit code 1 as an expected completed check
+with `SuccessExitStatus=1`, because the JSON result conveys the integrity
+alert; operational errors still fail the unit. The timer remains scheduled in
+all cases. The journal and JSON contain the state and summary needed to
+distinguish them.
 
 `PrivateTmp` is intentionally not enabled because an explicitly configured
 extra file may live under `/tmp`. If the host never monitors such paths, an
@@ -320,17 +333,17 @@ world-readable.
 The integration is intentionally one-way: the agent reads
 `/run/config-integrity/result.json` and reports the sanitized status to the
 monitoring system. It has no mount of `/var/lib/config-integrity`, no ability to
-write the result, and no authority to run `init` or `update`. A future static
-`configintegrity` endpoint in the processor agent can consume the
-`config-integrity-result/v1` schema and present it as a normal monitored
-endpoint.
+write the result, and no authority to run `init` or `update`. The supplied
+static `configintegrity` endpoint consumes the `config-integrity-result/v1`
+schema and presents it as a normal monitored endpoint.
 
 #### Docker handoff troubleshooting
 
-If the `configintegrity` endpoint reports:
+If the `configintegrity` endpoint reports an unavailable result, for example:
 
 ```text
-CONFIGINTEGRITY: Failed to connect: Could not find a part of the path
+CONFIGINTEGRITY: Configuration integrity result unavailable
+Could not find a part of the path
 '/run/config-integrity/result.json'
 ```
 

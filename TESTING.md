@@ -143,6 +143,10 @@ sudo -u nmuser python3 -m json.tool /run/config-integrity/result.json
 ```
 
 Expect `"exit_code": 0`, `"status": "clean"`, and an empty `findings` list.
+Wait for the processor's next poll and confirm that the `configintegrity`
+endpoint is up/clean. The pre-existing Network Monitor alert is intentionally
+still present until a user explicitly resets it in the dashboard or through the
+assistant; do not expect a baseline update or clean result to acknowledge it.
 
 ### debsums-specific comparison
 
@@ -187,8 +191,11 @@ systemctl list-timers config-integrity.timer --no-pager
 
 Expect the service invocation to finish successfully when the baseline is
 clean. The oneshot service normally becomes `inactive (dead)` after success;
-the timer remains `active (waiting)`. A detected difference makes the service
-invocation fail with status 1 but does not disable future timer runs.
+the timer remains `active (waiting)`. A detected difference has raw process
+exit code 1 but is an expected successful unit result because the supplied unit
+uses `SuccessExitStatus=1`; the JSON still reports its integrity-difference
+state. Operational errors remain failed unit runs and do not disable future
+timer runs.
 
 ### Read-only result handoff test
 
